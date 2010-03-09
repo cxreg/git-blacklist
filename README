@@ -1,0 +1,36 @@
+This is a simple hook for a centralized Git repository to which multiple users
+have the ability to push.  If one user pushes a commit that they realize is a
+mistake, adding the sha1 of that commit to the blacklist helps prevent other
+users from unwittingly re-pushing the bad commit.
+
+Prerequisites:
+
+ * Perl - http://www.perl.org
+ * DBM::Deep - http://search.cpan.org/dist/DBM-Deep/
+
+Installation:
+
+1) Copy the "update.blacklist" script to the hooks/ directory of the desired Git
+repository, making sure that it is executable.  You should then either change
+its name to "update", or have it execute from an existing update hook.  Remember
+that the exit code of the hook is important, and a non-zero exit status should
+be passed along from any wrapper.
+
+2) Create a directoy under hooks named data (hooks/data/).  You'll want to
+ensure that this directory is writable by all users, and should probably have
+0775 permissions.
+
+3) Create a file in hooks/data/, again writable by all users, which is named
+"blacklist".  You can use "blacklist.sample" as a template, which contains
+some helpful comments for users.
+
+4) Optionally create a "blacklist-error" file under hooks/data/ which instructs
+the users how to resolve the error they received, or who to contact.  You may
+want to use the included "blacklist-error.sample" file as an example message.
+
+Usage:
+
+When the hook is activated, it will read the "blacklist" file, and create a
+blacklist.db file which contains any configuration found in that file.  If the
+file exists already, the mtime of the blacklist file will be inspected to
+determine if it must repopulate the database.

@@ -1,0 +1,251 @@
+#!/usr/bin/perl
+#
+# Blacklist for git push, to prevent mistakes from being re-added to a
+# central repository
+#
+# This script requires a "blacklist" file in the directory hooks/data.  See the
+# blacklist.sample file for more detailed information.
+#
+# Installation:
+#
+#   $ cp update.blacklist /path/to/repo.git/hooks
+#   $ mkdir /path/to/repo.git/hooks/data
+#   $ cp blacklist.sample /path/to/repo.git/hooks/data/blacklist
+#   [add entries to /path/to/repo.git/hooks/data/blacklist as needed]
+#
+# If you want a custom error message, install a hooks/data/blacklist-error
+# file with the messaging you prefer.  The token _ERROR_ will be replaced
+# with a specific message regarding the particular error that occurred.
+#
+
+use strict;
+use warnings;
+
+use DBM::Deep;
+use File::Copy qw(copy move);
+use File::Temp qw(tempfile);
+
+my $BLACKLIST_FILE    = 'hooks/data/blacklist';
+my $BLACKLIST_DB_FILE = 'hooks/data/blacklist.db';
+my $ERROR_TEMPLATE    = 'hooks/data/blacklist-error';
+my $MIN_SHA_LENGTH    = 7;
+my $BLACKLIST;
+
+my ($ref, $old_sha, $new_sha) = @ARGV;
+die "Usage: $0 <ref> <old object> <new object>\n"
+    unless $ref and $old_sha and $new_sha;
+
+my $ref_type;
+my %type_map = (
+    heads => 'branch',
+    tags  => 'tag',
+);
+if ($ref =~ m!refs/([^/]+)/(.*)!) {
+    $ref_type = $type_map{$1};
+    $ref      = $2;
+}
+else {
+    die "Couldn't identify type of $ref\n" unless $ref_type;
+}
+
+# Compute all the commits between here and there
+my @shas;
+if ($old_sha eq '0000000000000000000000000000000000000000') {
+    # This is a new branch, so fetch all commits
+    chomp(@shas = `git log --pretty=format:%h $new_sha`);
+}
+elsif ($new_sha eq '0000000000000000000000000000000000000000') {
+    # This is a delete, which is always ok (for now, anway)
+    exit 0;
+}
+else {
+    chomp(@shas = `git log --pretty=format:%h $old_sha..$new_sha`);
+}
+
+# Check ref blacklist
+if (blacklisted(ref => $ref)) {
+    fail("$ref_type '$ref' is blacklisted");
+}
+
+for my $sha (@shas) {
+
+    # Check new sha1 against sha blacklist
+    if (blacklisted(sha => $sha)) {
+        fail("commit $sha is blacklisted");
+    }
+
+    # Check sha against sha+ref blacklist
+    if (blacklisted(ref => $ref, sha => $sha)) {
+        fail("commit $sha is not allowed to be pushed to $ref_type '$ref'");
+    }
+}
+
+
+exit 0;
+
+sub blacklisted {
+    my %args = @_;
+
+    open_db() unless $BLACKLIST;
+
+    if ($args{'ref'}) {
+        return 0 unless exists $BLACKLIST->{'ref'}->{$args{'ref'}};
+
+        # This ref is blocked entirely
+        return 1 if exists $BLACKLIST->{'ref'}->{$args{'ref'}}->{'__ALL__'};
+
+        if ($args{'sha'}) {
+            # sha blocked on this ref
+            return 1 if
+                exists $BLACKLIST->{'ref'}->{$args{'ref'}}->{by_sha} &&
+                exists $BLACKLIST->{'ref'}->{$args{'ref'}}->{by_sha}->{$args{'sha'}};
+        }
+
+        # This ref/sha combination is ok
+        return 0;
+    }
+    elsif ($args{'sha'}) {
+        return 0 unless exists $BLACKLIST->{'sha'}->{$args{'sha'}};
+
+        # Yep, blocked
+        return 1;
+    }
+
+    # Nothing to check
+    return 0;
+}
+
+sub open_db {
+    my $db_mtime   = (stat($BLACKLIST_DB_FILE))[9];
+    my $file_mtime = (stat($BLACKLIST_FILE))[9];
+
+    # db file is old or non-existent, lets build it
+    if (!$db_mtime or $db_mtime < $file_mtime) {
+        # Get a tempfile, but close the filehandle because we don't need it
+        my ($fh, $tmp_name) = tempfile();
+        close $fh;
+
+        # Make file readable, and group writable
+        chmod(0664, $tmp_name);
+
+        # Create the temp Db file
+        my $build_db = DBM::Deep->new($tmp_name);
+
+        # Fill db file from flat file
+        load_blacklist($build_db);
+
+        # Destroy reference to close the file
+        undef $build_db;
+
+        # Backup any old db file and put the new one in place
+        copy($BLACKLIST_DB_FILE, "${BLACKLIST_DB_FILE}~");
+        move($tmp_name, $BLACKLIST_DB_FILE);
+
+        # Permissions are being slipperly, so let's be heavy handed here
+        chmod(0664, $BLACKLIST_DB_FILE);
+        chmod(0664, "${BLACKLIST_DB_FILE}~");
+    }
+
+    $BLACKLIST = DBM::Deep->new($BLACKLIST_DB_FILE);
+}
+
+# To block any ref from a commit, enter
+#
+#   :sha
+#
+# To block any update to ref, enter
+#
+#   ref: (: is optional)
+#
+# To block a particular sha for a ref, enter
+#
+#   ref:sha
+#
+sub load_blacklist {
+    my ($hashref) = @_;
+
+    open my $f, $BLACKLIST_FILE or die "Couldn't open $BLACKLIST_FILE: $!";
+
+    while(my $line = <$f>) {
+        $line =~ s/#.*//;
+        $line =~ s/^\s*|\s*$//sg;
+        next unless length($line);
+
+        my ($ref, $sha) = split /:/, $line, 2;
+
+        if ($ref) {
+            if (_validate_ref($ref)) {
+                if ($sha) {
+                    if (_validate_sha($sha)) {
+                        $sha = substr $sha, 0, 7;
+                        $hashref->{'ref'}->{$ref}->{'by_sha'}->{$sha} = 1;
+                    }
+                }
+                else {
+                    $hashref->{'ref'}->{$ref}->{'__ALL__'} = 1;
+                }
+            }
+        } elsif ($sha) {
+            if (_validate_sha($sha)) {
+                $sha = substr $sha, 0, 7;
+                $hashref->{'sha'}->{$sha} = 1;
+            }
+        }
+    }
+}
+
+sub _validate_sha {
+    my ($sha) = @_;
+
+    if (length($sha) < $MIN_SHA_LENGTH) {
+        warn "BLACKLIST ERROR: SHA in blacklist is too short: $sha\n";
+        return 0;
+    }
+
+    return 1;
+}
+
+sub _validate_ref {
+    my ($ref) = @_;
+
+    # There's a small chance that a tag or branch matches this, but most have
+    # an underscore, or letters past 'f', or something else, so it's not a big
+    # concern
+    if ($ref =~ /[0-9]/ and $ref =~ /^[a-f0-9]*$/) {
+        warn "BLACKLIST ERROR: Detected sha listed as a branch or tag: $ref\n";
+        return 0;
+    }
+
+    return 1;
+}
+
+sub fail {
+    my ($message) = @_;
+
+    my $output;
+    if ( -f $ERROR_TEMPLATE ) {
+        open my $f, '<', $ERROR_TEMPLATE
+            or warn "BLACKLIST ERROR: Could not open $ERROR_TEMPLATE: $!\n";
+        local $/;
+        $output = <$f>;
+    }
+
+    if (! $output or $output !~ /\S/s ) {
+        $output = <<TEMPLATE;
+********************************************************************************
+
+Your push was rejected for the following reason:
+
+_ERROR_
+
+Please see your team lead or Git administrator if you need further assistance.
+
+********************************************************************************
+TEMPLATE
+    }
+
+    $output =~ s/_ERROR_/$message/;
+    print STDERR $output;
+
+    exit 1;
+}

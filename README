@@ -16,7 +16,7 @@ its name to "update", or have it execute from an existing update hook.  Remember
 that the exit code of the hook is important, and a non-zero exit status should
 be passed along from any wrapper.
 
-2) Create a directoy under hooks named data (hooks/data/).  You'll want to
+2) Create a directory under hooks named data (hooks/data/).  You'll want to
 ensure that this directory is writable by all users, and should probably have
 0775 permissions.
 

@@ -3,15 +3,23 @@
 #
 # The format of this file is as follows:
 #
-#   * Anything following a '#' sign is a comment, and will be ignored
+#   * Any line beginning with a '#' sign is a comment, and will be ignored
 #   * All leading and trailing whitespace is ignored
 #   * Blank lines are ignored
 #   * Any remaining data is considered blacklist entries in the following formats:
 #
-#      foo       # Blacklist any tag or branch named "foo"
+#      # Blacklist any tag or branch named "foo"
+#      foo
 #
-#      :4b18c65  # Blacklist the commit object "4b18c65".  A minimum of 7 characters are required.
+#      # Blacklist the commit object "4b18c65".  A minimum of 7 characters are required.
+#      :4b18c65
 #
-#      foo:4b18c65  # Blacklist commit object "4b18c65" from branch or tag "foo".  This commit
-#                   # may still be pushed to other branches or tags.
+#      # Blacklist commit object "4b18c65" from branch or tag "foo".  This commit
+#      # may still be pushed to other branches or tags.
+#      foo:4b18c65
+#
+#   * Comments following entries will be displayed to the user as a reason for
+#     the deny
+#
+#      foo # Sorry, branch foo has been removed
 #

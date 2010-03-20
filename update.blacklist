@@ -17,6 +17,17 @@
 # file with the messaging you prefer.  The token _ERROR_ will be replaced
 # with a specific message regarding the particular error that occurred.
 #
+# It's also possible to provide per-entry comments and have them externally
+# formatted and displayed to the user.  If you want to use this, put a comment
+# on the same line as the entry, following it, like this:
+#
+#   foo:36b1a74 # Sorry, not allowed here
+#
+# If you'd like to configure an external command to format this message, set it
+# under the parameter blacklist.formatcmd, such as:
+#
+#   $ git config blacklist.formatcmd "cowsay"
+#
 
 use strict;
 use warnings;
@@ -30,6 +41,7 @@ my $BLACKLIST_DB_FILE = 'hooks/data/blacklist.db';
 my $ERROR_TEMPLATE    = 'hooks/data/blacklist-error';
 my $MIN_SHA_LENGTH    = 7;
 my $BLACKLIST;
+chomp(my $FORMAT_CMD  = `git config --get blacklist.formatcmd`);
 
 my ($ref, $old_sha, $new_sha) = @ARGV;
 die "Usage: $0 <ref> <old object> <new object>\n"
@@ -63,20 +75,23 @@ else {
 }
 
 # Check ref blacklist
-if (blacklisted(ref => $ref)) {
-    fail("$ref_type '$ref' is blacklisted");
+if (my $ret = blacklisted(ref => $ref)) {
+    my $note = ref($ret) ? $ret->{'comment'} : undef;
+    fail("$ref_type '$ref' is blacklisted", $note);
 }
 
 for my $sha (@shas) {
 
     # Check new sha1 against sha blacklist
-    if (blacklisted(sha => $sha)) {
-        fail("commit $sha is blacklisted");
+    if (my $ret = blacklisted(sha => $sha)) {
+        my $note = ref($ret) ? $ret->{'comment'} : undef;
+        fail("commit $sha is blacklisted", $note);
     }
 
     # Check sha against sha+ref blacklist
-    if (blacklisted(ref => $ref, sha => $sha)) {
-        fail("commit $sha is not allowed to be pushed to $ref_type '$ref'");
+    if (my $ret = blacklisted(ref => $ref, sha => $sha)) {
+        my $note = ref($ret) ? $ret->{'comment'} : undef;
+        fail("commit $sha is not allowed to be pushed to $ref_type '$ref'", $note);
     }
 }
 
@@ -92,11 +107,12 @@ sub blacklisted {
         return 0 unless exists $BLACKLIST->{'ref'}->{$args{'ref'}};
 
         # This ref is blocked entirely
-        return 1 if exists $BLACKLIST->{'ref'}->{$args{'ref'}}->{'__ALL__'};
+        return $BLACKLIST->{'ref'}->{$args{'ref'}}->{'__ALL__'}
+            if exists $BLACKLIST->{'ref'}->{$args{'ref'}}->{'__ALL__'};
 
         if ($args{'sha'}) {
             # sha blocked on this ref
-            return 1 if
+            return $BLACKLIST->{'ref'}->{$args{'ref'}}->{by_sha}->{$args{'sha'}} if
                 exists $BLACKLIST->{'ref'}->{$args{'ref'}}->{by_sha} &&
                 exists $BLACKLIST->{'ref'}->{$args{'ref'}}->{by_sha}->{$args{'sha'}};
         }
@@ -108,7 +124,7 @@ sub blacklisted {
         return 0 unless exists $BLACKLIST->{'sha'}->{$args{'sha'}};
 
         # Yep, blocked
-        return 1;
+        return $BLACKLIST->{'sha'}->{$args{'sha'}};
     }
 
     # Nothing to check
@@ -167,7 +183,10 @@ sub load_blacklist {
     open my $f, $BLACKLIST_FILE or die "Couldn't open $BLACKLIST_FILE: $!";
 
     while(my $line = <$f>) {
-        $line =~ s/#.*//;
+        my $comment;
+        if ($line =~ s/#\s*(.*)\s*//) {
+            $comment = $1;
+        }
         $line =~ s/^\s*|\s*$//sg;
         next unless length($line);
 
@@ -178,17 +197,20 @@ sub load_blacklist {
                 if ($sha) {
                     if (_validate_sha($sha)) {
                         $sha = substr $sha, 0, 7;
-                        $hashref->{'ref'}->{$ref}->{'by_sha'}->{$sha} = 1;
+                        $hashref->{'ref'}->{$ref}->{'by_sha'}->{$sha} = $comment
+                            ? { comment => $comment } : 1;
                     }
                 }
                 else {
-                    $hashref->{'ref'}->{$ref}->{'__ALL__'} = 1;
+                    $hashref->{'ref'}->{$ref}->{'__ALL__'} = $comment
+                        ? { comment => $comment } : 1;
                 }
             }
         } elsif ($sha) {
             if (_validate_sha($sha)) {
                 $sha = substr $sha, 0, 7;
-                $hashref->{'sha'}->{$sha} = 1;
+                $hashref->{'sha'}->{$sha} = $comment
+                    ? { comment => $comment } : 1;
             }
         }
     }
@@ -220,7 +242,7 @@ sub _validate_ref {
 }
 
 sub fail {
-    my ($message) = @_;
+    my ($message, $comment) = @_;
 
     my $output;
     if ( -f $ERROR_TEMPLATE ) {
@@ -242,6 +264,20 @@ Please see your team lead or Git administrator if you need further assistance.
 
 ********************************************************************************
 TEMPLATE
+    }
+
+    if (defined $comment) {
+        if ($FORMAT_CMD) {
+            # Try to remove meta-characters before shelling out to prevent
+            # funny business
+            $comment =~ tr/<>&;|$*?!//d;
+            $comment = `$FORMAT_CMD $comment`;
+        }
+
+        # Make sure we still have one
+        if (length $comment) {
+            $message .= ":\n\n$comment";
+        }
     }
 
     $output =~ s/_ERROR_/$message/;

@@ -34,3 +34,5 @@ When the hook is activated, it will read the "blacklist" file, and create a
 blacklist.db file which contains any configuration found in that file.  If the
 file exists already, the mtime of the blacklist file will be inspected to
 determine if it must repopulate the database.
+
+Join the chat at https://gitter.im/cxreg/git-blacklist
